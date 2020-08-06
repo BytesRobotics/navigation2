@@ -63,6 +63,8 @@ ControllerServer::ControllerServer()
 ControllerServer::~ControllerServer()
 {
   RCLCPP_INFO(get_logger(), "Destroying");
+  controllers_.clear();
+  costmap_thread_.reset();
 }
 
 nav2_util::CallbackReturn
@@ -113,8 +115,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & state)
       progress_checker_id_.c_str(), progress_checker_type_.c_str());
     progress_checker_->initialize(node, progress_checker_id_);
   } catch (const pluginlib::PluginlibException & ex) {
-    RCLCPP_FATAL(get_logger(), "Failed to create controller. Exception: %s", ex.what());
-    exit(-1);
+    pluginFailed("progress_checker", ex);
   }
   try {
     goal_checker_type_ = nav2_util::get_plugin_type_param(node, goal_checker_id_);
@@ -124,8 +125,7 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & state)
       goal_checker_id_.c_str(), goal_checker_type_.c_str());
     goal_checker_->initialize(node, goal_checker_id_);
   } catch (const pluginlib::PluginlibException & ex) {
-    RCLCPP_FATAL(get_logger(), "Failed to create controller. Exception: %s", ex.what());
-    exit(-1);
+    pluginFailed("goal_checker", ex);
   }
 
   for (size_t i = 0; i != controller_ids_.size(); i++) {
@@ -141,14 +141,17 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & state)
         costmap_ros_->getTfBuffer(), costmap_ros_);
       controllers_.insert({controller_ids_[i], controller});
     } catch (const pluginlib::PluginlibException & ex) {
-      RCLCPP_FATAL(get_logger(), "Failed to create controller. Exception: %s", ex.what());
-      exit(-1);
+      pluginFailed("controller", ex);
     }
   }
 
   for (size_t i = 0; i != controller_ids_.size(); i++) {
     controller_ids_concat_ += controller_ids_[i] + std::string(" ");
   }
+
+  RCLCPP_INFO(
+    get_logger(),
+    "Controller Server has %s controllers available.", controller_ids_concat_.c_str());
 
   odom_sub_ = std::make_unique<nav_2d_utils::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
@@ -312,7 +315,7 @@ void ControllerServer::computeControl()
     return;
   }
 
-  RCLCPP_DEBUG(get_logger(), "DWB succeeded, setting result");
+  RCLCPP_DEBUG(get_logger(), "Controller succeeded, setting result");
 
   publishZeroVelocity();
 
@@ -330,7 +333,7 @@ void ControllerServer::setPlannerPath(const nav_msgs::msg::Path & path)
   }
   controllers_[current_controller_]->setPlan(path);
 
-  auto end_pose = *(path.poses.end() - 1);
+  auto end_pose = path.poses.back();
   goal_checker_->reset();
 
   RCLCPP_DEBUG(
@@ -421,7 +424,6 @@ bool ControllerServer::getRobotPose(geometry_msgs::msg::PoseStamped & pose)
 {
   geometry_msgs::msg::PoseStamped current_pose;
   if (!costmap_ros_->getRobotPose(current_pose)) {
-    RCLCPP_ERROR(this->get_logger(), "Could not get robot pose");
     return false;
   }
   pose = current_pose;

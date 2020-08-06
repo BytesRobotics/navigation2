@@ -67,6 +67,7 @@ PlannerServer::~PlannerServer()
 {
   RCLCPP_INFO(get_logger(), "Destroying");
   planners_.clear();
+  costmap_thread_.reset();
 }
 
 nav2_util::CallbackReturn
@@ -109,6 +110,10 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & state)
   for (size_t i = 0; i != planner_ids_.size(); i++) {
     planner_ids_concat_ += planner_ids_[i] + std::string(" ");
   }
+
+  RCLCPP_INFO(
+    get_logger(),
+    "Planner Server has %s planners available.", planner_ids_concat_.c_str());
 
   double expected_planner_frequency;
   get_parameter("expected_planner_frequency", expected_planner_frequency);
@@ -190,6 +195,7 @@ PlannerServer::on_cleanup(const rclcpp_lifecycle::State & state)
     it->second->cleanup();
   }
   planners_.clear();
+  costmap_ = nullptr;
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -225,6 +231,7 @@ PlannerServer::computePlan()
     geometry_msgs::msg::PoseStamped start;
     if (!costmap_ros_->getRobotPose(start)) {
       RCLCPP_ERROR(this->get_logger(), "Could not get robot pose");
+      action_server_->terminate_current();
       return;
     }
 
@@ -295,15 +302,6 @@ PlannerServer::computePlan()
       get_logger(), "%s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"",
       goal->planner_id.c_str(), goal->pose.pose.position.x,
       goal->pose.pose.position.y, ex.what());
-    // TODO(orduno): provide information about fail error to parent task,
-    //               for example: couldn't get costmap update
-    action_server_->terminate_current();
-    return;
-  } catch (...) {
-    RCLCPP_WARN(
-      get_logger(), "Plan calculation failed, "
-      "An unexpected error has occurred. The planner server"
-      " may not be able to continue operating correctly.");
     // TODO(orduno): provide information about fail error to parent task,
     //               for example: couldn't get costmap update
     action_server_->terminate_current();
