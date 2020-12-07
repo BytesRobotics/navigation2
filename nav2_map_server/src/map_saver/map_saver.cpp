@@ -35,6 +35,7 @@
 #include <memory>
 #include <stdexcept>
 #include <functional>
+#include <mutex>
 
 using namespace std::placeholders;
 
@@ -55,7 +56,6 @@ MapSaver::MapSaver()
 
 MapSaver::~MapSaver()
 {
-  RCLCPP_INFO(get_logger(), "Destroying");
 }
 
 nav2_util::CallbackReturn
@@ -78,6 +78,10 @@ nav2_util::CallbackReturn
 MapSaver::on_activate(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Activating");
+
+  // create bond connection
+  createBond();
+
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -85,6 +89,10 @@ nav2_util::CallbackReturn
 MapSaver::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Deactivating");
+
+  // destroy bond connection
+  destroyBond();
+
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -92,6 +100,9 @@ nav2_util::CallbackReturn
 MapSaver::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Cleaning up");
+
+  save_map_service_.reset();
+
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -141,6 +152,9 @@ bool MapSaver::saveMapTopicToFile(
     // Pointer to map message received in the subscription callback
     nav_msgs::msg::OccupancyGrid::SharedPtr map_msg = nullptr;
 
+    // Mutex for handling map_msg shared resource
+    std::recursive_mutex access;
+
     // Correct map_topic_loc if necessary
     if (map_topic_loc == "") {
       map_topic_loc = "map";
@@ -166,8 +180,9 @@ bool MapSaver::saveMapTopicToFile(
     }
 
     // A callback function that receives map message from subscribed topic
-    auto mapCallback = [&map_msg](
+    auto mapCallback = [&map_msg, &access](
       const nav_msgs::msg::OccupancyGrid::SharedPtr msg) -> void {
+        std::lock_guard<std::recursive_mutex> guard(access);
         map_msg = msg;
       };
 
@@ -191,6 +206,9 @@ bool MapSaver::saveMapTopicToFile(
       }
 
       if (map_msg) {
+        std::lock_guard<std::recursive_mutex> guard(access);
+        // map_sub is no more needed
+        map_sub.reset();
         // Map message received. Saving it to file
         if (saveMapToFile(*map_msg, save_parameters_loc)) {
           RCLCPP_INFO(get_logger(), "Map saved successfully");

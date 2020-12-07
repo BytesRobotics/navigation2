@@ -39,6 +39,7 @@
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 
 #include <memory>
+#include <chrono>
 #include <string>
 #include <vector>
 #include <utility>
@@ -84,7 +85,7 @@ Costmap2DROS::Costmap2DROS(
     {"--ros-args", "-r", std::string("__node:=") + get_name() + "_client", "--"});
   client_node_ = std::make_shared<rclcpp::Node>("_", options);
 
-  std::vector<std::string> clearable_layers{"obstacle_layer"};
+  std::vector<std::string> clearable_layers{"obstacle_layer", "voxel_layer", "range_layer"};
 
   declare_parameter("always_send_full_costmap", rclcpp::ParameterValue(false));
   declare_parameter("footprint_padding", rclcpp::ParameterValue(0.01f));
@@ -116,7 +117,6 @@ Costmap2DROS::Costmap2DROS(
 
 Costmap2DROS::~Costmap2DROS()
 {
-  RCLCPP_INFO(get_logger(), "Destroying");
 }
 
 nav2_util::CallbackReturn
@@ -126,7 +126,8 @@ Costmap2DROS::on_configure(const rclcpp_lifecycle::State & /*state*/)
   getParameters();
 
   // Create the costmap itself
-  layered_costmap_ = new LayeredCostmap(global_frame_, rolling_window_, track_unknown_space_);
+  layered_costmap_ = std::make_unique<LayeredCostmap>(
+    global_frame_, rolling_window_, track_unknown_space_);
 
   if (!layered_costmap_->isSizeLocked()) {
     layered_costmap_->resizeMap(
@@ -151,7 +152,7 @@ Costmap2DROS::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
     // TODO(mjeronimo): instead of get(), use a shared ptr
     plugin->initialize(
-      layered_costmap_, plugin_names_[i], tf_buffer_.get(),
+      layered_costmap_.get(), plugin_names_[i], tf_buffer_.get(),
       shared_from_this(), client_node_, rclcpp_node_);
 
     RCLCPP_INFO(get_logger(), "Initialized plugin \"%s\"", plugin_names_[i].c_str());
@@ -166,7 +167,7 @@ Costmap2DROS::on_configure(const rclcpp_lifecycle::State & /*state*/)
   footprint_pub_ = create_publisher<geometry_msgs::msg::PolygonStamped>(
     "published_footprint", rclcpp::SystemDefaultsQoS());
 
-  costmap_publisher_ = new Costmap2DPublisher(
+  costmap_publisher_ = std::make_unique<Costmap2DPublisher>(
     shared_from_this(),
     layered_costmap_->getCostmap(), global_frame_,
     "costmap", always_send_full_costmap_);
@@ -255,8 +256,7 @@ Costmap2DROS::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Cleaning up");
 
-  delete layered_costmap_;
-  layered_costmap_ = nullptr;
+  layered_costmap_.reset();
 
   tf_listener_.reset();
   tf_buffer_.reset();
@@ -264,11 +264,7 @@ Costmap2DROS::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   footprint_sub_.reset();
   footprint_pub_.reset();
 
-  if (costmap_publisher_ != nullptr) {
-    delete costmap_publisher_;
-    costmap_publisher_ = nullptr;
-  }
-
+  costmap_publisher_.reset();
   clear_costmap_service_.reset();
 
   return nav2_util::CallbackReturn::SUCCESS;
@@ -324,7 +320,7 @@ Costmap2DROS::getParameters()
   if (map_publish_frequency_ > 0) {
     publish_cycle_ = rclcpp::Duration::from_seconds(1 / map_publish_frequency_);
   } else {
-    publish_cycle_ = rclcpp::Duration(-1);
+    publish_cycle_ = rclcpp::Duration(-1s);
   }
 
   // 3. If the footprint has been specified, it must be in the correct format
@@ -387,7 +383,7 @@ Costmap2DROS::mapUpdateLoop(double frequency)
 
   RCLCPP_DEBUG(get_logger(), "Entering loop");
 
-  rclcpp::Rate r(frequency);    // 200ms by default
+  rclcpp::WallRate r(frequency);    // 200ms by default
 
   while (rclcpp::ok() && !map_update_thread_shutdown_) {
     nav2_util::ExecutionTimer timer;
@@ -398,7 +394,7 @@ Costmap2DROS::mapUpdateLoop(double frequency)
     timer.end();
 
     RCLCPP_DEBUG(get_logger(), "Map update time: %.9f", timer.elapsed_time_in_seconds());
-    if (publish_cycle_ > rclcpp::Duration(0) && layered_costmap_->isInitialized()) {
+    if (publish_cycle_ > rclcpp::Duration(0s) && layered_costmap_->isInitialized()) {
       unsigned int x0, y0, xn, yn;
       layered_costmap_->getBounds(&x0, &xn, &y0, &yn);
       costmap_publisher_->updateBounds(x0, xn, y0, yn);

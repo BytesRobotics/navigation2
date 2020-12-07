@@ -46,7 +46,7 @@ PlannerServer::PlannerServer()
 
   // Declare this node's parameters
   declare_parameter("planner_plugins", default_ids_);
-  declare_parameter("expected_planner_frequency", 20.0);
+  declare_parameter("expected_planner_frequency", 1.0);
 
   get_parameter("planner_plugins", planner_ids_);
   if (planner_ids_ == default_ids_) {
@@ -65,7 +65,6 @@ PlannerServer::PlannerServer()
 
 PlannerServer::~PlannerServer()
 {
-  RCLCPP_INFO(get_logger(), "Destroying");
   planners_.clear();
   costmap_thread_.reset();
 }
@@ -103,7 +102,6 @@ PlannerServer::on_configure(const rclcpp_lifecycle::State & state)
       RCLCPP_FATAL(
         get_logger(), "Failed to create global planner. Exception: %s",
         ex.what());
-      exit(-1);
     }
   }
 
@@ -227,6 +225,12 @@ PlannerServer::computePlan()
       return;
     }
 
+    // Don't compute a plan until costmap is valid (after clear costmap)
+    rclcpp::Rate r(100);
+    while (!costmap_ros_->isCurrent()) {
+      r.sleep();
+    }
+
     geometry_msgs::msg::PoseStamped start;
     if (!costmap_ros_->getRobotPose(start)) {
       action_server_->terminate_current();
@@ -234,7 +238,6 @@ PlannerServer::computePlan()
     }
 
     if (action_server_->is_preempt_requested()) {
-      RCLCPP_INFO(get_logger(), "Preempting the goal pose.");
       goal = action_server_->accept_pending_goal();
     }
 
@@ -315,10 +318,7 @@ void
 PlannerServer::publishPlan(const nav_msgs::msg::Path & path)
 {
   auto msg = std::make_unique<nav_msgs::msg::Path>(path);
-  if (
-    plan_publisher_->is_activated() &&
-    this->count_subscribers(plan_publisher_->get_topic_name()) > 0)
-  {
+  if (plan_publisher_->is_activated() && plan_publisher_->get_subscription_count() > 0) {
     plan_publisher_->publish(std::move(msg));
   }
 }
